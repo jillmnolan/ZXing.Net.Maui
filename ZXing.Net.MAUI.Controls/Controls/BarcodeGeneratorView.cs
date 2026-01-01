@@ -1,12 +1,4 @@
-﻿using Microsoft.Maui;
-using Microsoft.Maui.Controls;
-using Microsoft.Maui.Graphics;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using ZXing.Net.Maui;
+﻿using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 
 namespace ZXing.Net.Maui.Controls
@@ -56,6 +48,15 @@ namespace ZXing.Net.Maui.Controls
 		{
 			get => (int)GetValue(BarcodeMarginProperty);
 			set => SetValue(BarcodeMarginProperty, value);
+		}
+
+		public static readonly BindableProperty CharacterSetProperty =
+			BindableProperty.Create(nameof(CharacterSet), typeof(string), typeof(BarcodeGeneratorView), defaultValue: "UTF-8");
+
+		public string CharacterSet
+		{
+			get => (string)GetValue(CharacterSetProperty);
+			set => SetValue(CharacterSetProperty, value);
 		}
 	}
 }

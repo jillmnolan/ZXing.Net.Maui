@@ -14,7 +14,7 @@ The successor to ZXing.Net.Mobile: barcode scanning and generation for .NET MAUI
 
     ```csharp
     // Add the using to the top
-    using ZXing.Net.Maui;
+    using ZXing.Net.Maui.Controls;
     
     // ... other code 
     
@@ -31,6 +31,23 @@ The successor to ZXing.Net.Mobile: barcode scanning and generation for .NET MAUI
     ```
 
 Now we just need to add the right permissions to our app metadata. Find below how to do that for each platform.
+
+### Check Device Support
+
+Before using barcode scanning, you can check if the device supports it (i.e., has a camera available):
+
+```csharp
+if (ZXing.Net.Maui.BarcodeScanning.IsSupported)
+{
+  // Device has a camera, safe to use barcode scanning
+}
+else
+{
+  // No camera available, show alternative UI or message
+}
+```
+
+This is useful for handling devices without cameras gracefully, avoiding runtime exceptions.
 
 #### Android
 
@@ -77,6 +94,15 @@ cameraBarcodeReaderView.Options = new BarcodeReaderOptions
 };
 ```
 
+QR codes with international characters (e.g., £, €, ¥, or non-Latin scripts) are supported by default with UTF-8 encoding. You can override this if needed:
+```csharp
+cameraBarcodeReaderView.Options = new BarcodeReaderOptions
+{
+  Formats = BarcodeFormats.TwoDimensional,
+  CharacterSet = "ISO-8859-1"  // Override default UTF-8 if needed
+};
+```
+
 Toggle Torch
 ```csharp
 cameraBarcodeReaderView.IsTorchOn = !cameraBarcodeReaderView.IsTorchOn;
@@ -86,6 +112,30 @@ Flip between Rear/Front cameras
 ```csharp
 cameraBarcodeReaderView.CameraLocation
   = cameraBarcodeReaderView.CameraLocation == CameraLocation.Rear ? CameraLocation.Front : CameraLocation.Rear;
+```
+
+Select a specific camera
+```csharp
+// Get available cameras
+var cameras = await cameraBarcodeReaderView.GetAvailableCameras();
+
+// Select a specific camera by setting the SelectedCamera property
+if (cameras.Count > 0)
+{
+  cameraBarcodeReaderView.SelectedCamera = cameras[0];
+}
+
+// Or loop through available cameras and select one by name
+foreach (var camera in cameras)
+{
+  Console.WriteLine($"Camera: {camera.Name} ({camera.Location})");
+  // Select the first rear camera found
+  if (camera.Location == CameraLocation.Rear)
+  {
+    cameraBarcodeReaderView.SelectedCamera = camera;
+    break;
+  }
+}
 ```
 
 Handle detected barcode(s)
@@ -107,6 +157,21 @@ protected void BarcodesDetected(object sender, BarcodeDetectionEventArgs e)
   Format="QrCode"
   Margin="3" />
 ```
+
+### Character Encoding
+
+The `BarcodeGeneratorView` supports UTF-8 character encoding by default, which allows you to encode international characters including Chinese, Japanese, Arabic, and other non-ASCII characters. You can also specify a different character encoding if needed:
+
+```xaml
+<zxing:BarcodeGeneratorView
+  HeightRequest="100"
+  WidthRequest="100"
+  Value="测试中文 Test UTF-8"
+  Format="QrCode"
+  CharacterSet="UTF-8" />
+```
+
+The `CharacterSet` property defaults to "UTF-8" if not specified. Other common values include "ISO-8859-1", "Shift_JIS", etc., depending on your barcode format requirements.
 
 
 

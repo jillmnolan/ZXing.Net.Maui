@@ -1,7 +1,5 @@
-﻿using System;
-using Microsoft.Maui;
+﻿using Microsoft.Maui;
 using Microsoft.Maui.Graphics;
-using System;
 
 namespace ZXing.Net.Maui
 {
@@ -13,6 +11,8 @@ namespace ZXing.Net.Maui
 	public interface ICameraView : IView, ICameraFrameAnalyzer
 	{
 		CameraLocation CameraLocation { get; set; }
+
+		CameraInfo SelectedCamera { get; set; }
 
 		//CameraMode Mode { get; set; }
 

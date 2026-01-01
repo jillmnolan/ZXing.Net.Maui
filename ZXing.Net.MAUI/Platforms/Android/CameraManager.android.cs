@@ -1,136 +1,263 @@
-﻿using System;
-using Android.Content;
+﻿using System.Runtime.Versioning;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
 using Android.Graphics;
-using Android.Hardware.Camera2;
-using Android.Hardware.Camera2.Params;
-using Android.Media;
-using Android.Nfc;
-using Android.OS;
-using Android.Renderscripts;
-using Android.Runtime;
-using Android.Util;
-using Android.Views;
+
 using AndroidX.Camera.Core;
+using AndroidX.Camera.Core.ResolutionSelector;
 using AndroidX.Camera.Lifecycle;
 using AndroidX.Camera.View;
 using AndroidX.Core.Content;
-using Java.Util;
+
 using Java.Util.Concurrent;
-using Microsoft.Maui;
-using Microsoft.Maui.Handlers;
-using Microsoft.Extensions.DependencyInjection;
-using static Android.Hardware.Camera;
-using static Android.Provider.Telephony;
-using static Java.Util.Concurrent.Flow;
-using AView = Android.Views.View;
-using Android.Hardware;
-using static Android.Graphics.Paint;
-using AndroidX.Camera.Camera2.InterOp;
 
 namespace ZXing.Net.Maui
 {
-	internal partial class CameraManager
-	{
-		AndroidX.Camera.Core.Preview cameraPreview;
-		ImageAnalysis imageAnalyzer;
-		PreviewView previewView;
-		IExecutorService cameraExecutor;
-		CameraSelector cameraSelector = null;
-		ProcessCameraProvider cameraProvider;
-		ICamera camera;
+    internal partial class CameraManager
+    {
+        /// <summary>
+        /// Gets a value indicating whether barcode scanning is supported on this device.
+        /// </summary>
+        public static partial bool IsSupported
+        {
+            get
+            {
+                try
+                {
+                    var context = Android.App.Application.Context;
+                    var cameraManager = (Android.Hardware.Camera2.CameraManager)context.GetSystemService(Android.Content.Context.CameraService);
+                    var cameraIds = cameraManager?.GetCameraIdList();
+                    return cameraIds != null && cameraIds.Length > 0;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
 
-		public NativePlatformCameraPreviewView CreateNativeView()
-		{
-			previewView = new PreviewView(Context.Context);
-			cameraExecutor = Executors.NewSingleThreadExecutor();
+        private ResolutionSelector _resolutionSelector;
+        private Preview _cameraPreview;
+        private ImageAnalysis _imageAnalyzer;
+        private PreviewView _previewView;
+        private IExecutorService _cameraExecutor;
+        private CameraSelector _cameraSelector = null;
+        private ProcessCameraProvider _cameraProvider;
+        private ICamera _camera;
 
-			return previewView;
-		}
+        private static readonly Android.Util.Size ScreenSize = new(640, 480);
 
-		public void Connect()
-		{
-			var cameraProviderFuture = ProcessCameraProvider.GetInstance(Context.Context);
+        public NativePlatformCameraPreviewView CreateNativeView()
+        {
+            _previewView = new PreviewView(Context.Context);
+            _cameraExecutor = Executors.NewSingleThreadExecutor();
 
-			cameraProviderFuture.AddListener(new Java.Lang.Runnable(() =>
-			{
-				// Used to bind the lifecycle of cameras to the lifecycle owner
-				cameraProvider = (ProcessCameraProvider)cameraProviderFuture.Get();
+            return _previewView;
+        }
 
-				// Preview
-				cameraPreview = new AndroidX.Camera.Core.Preview.Builder().Build();
-				cameraPreview.SetSurfaceProvider(previewView.SurfaceProvider);
+        public void Connect()
+        {
+            var cameraProviderFuture = ProcessCameraProvider.GetInstance(Context.Context);
 
-				// Frame by frame analyze
-				imageAnalyzer = new ImageAnalysis.Builder()
-					.SetDefaultResolution(new Android.Util.Size(640, 480))
-					.SetBackpressureStrategy(ImageAnalysis.StrategyKeepOnlyLatest)
-					.Build();
+            cameraProviderFuture.AddListener(new Java.Lang.Runnable(() =>
+            {
+                // Used to bind the lifecycle of cameras to the lifecycle owner
+                _cameraProvider = (ProcessCameraProvider)cameraProviderFuture.Get();
 
-				imageAnalyzer.SetAnalyzer(cameraExecutor, new FrameAnalyzer((buffer, size) =>
-					FrameReady?.Invoke(this, new CameraFrameBufferEventArgs(new Readers.PixelBufferHolder { Data = buffer, Size = size }))));
+                _resolutionSelector?.Dispose();
 
-				UpdateCamera();
+                _resolutionSelector = new ResolutionSelector
+                    .Builder()
+                    .SetResolutionStrategy(new ResolutionStrategy(ScreenSize, ResolutionStrategy.FallbackRuleClosestHigherThenLower))
+                    .Build();
 
-			}), ContextCompat.GetMainExecutor(Context.Context)); //GetMainExecutor: returns an Executor that runs on the main thread.
-		}
+                // Preview
+                _cameraPreview?.Dispose();
 
-		public void Disconnect()
-		{ }
+                _cameraPreview = new Preview
+                    .Builder()
+                    .SetResolutionSelector(_resolutionSelector)
+                    .Build();
 
-		public void UpdateCamera()
-		{
-			if (cameraProvider != null)
-			{
-				// Unbind use cases before rebinding
-				cameraProvider.UnbindAll();
+                _cameraPreview.SetSurfaceProvider(_cameraExecutor, _previewView.SurfaceProvider);
 
-				var cameraLocation = CameraLocation;
+                // Frame by frame analyze
+                _imageAnalyzer?.Dispose();
 
-				// Select back camera as a default, or front camera otherwise
-				if (cameraLocation == CameraLocation.Rear && cameraProvider.HasCamera(CameraSelector.DefaultBackCamera))
-					cameraSelector = CameraSelector.DefaultBackCamera;
-				else if (cameraLocation == CameraLocation.Front && cameraProvider.HasCamera(CameraSelector.DefaultFrontCamera))
-					cameraSelector = CameraSelector.DefaultFrontCamera;
-				else
-					cameraSelector = CameraSelector.DefaultBackCamera;
+                _imageAnalyzer = new ImageAnalysis
+                    .Builder()
+                    .SetOutputImageFormat(ImageAnalysis.OutputImageFormatRgba8888)
+                    .SetResolutionSelector(_resolutionSelector)
+                    .SetBackpressureStrategy(ImageAnalysis.StrategyKeepOnlyLatest)
+                    .Build();
 
-				if (cameraSelector == null)
-					throw new System.Exception("Camera not found");
+                _imageAnalyzer.SetAnalyzer(_cameraExecutor, new FrameAnalyzer((buffer, size) =>
+                    FrameReady?.Invoke(this, new CameraFrameBufferEventArgs(new Readers.PixelBufferHolder { Data = buffer, Size = size }))));
 
-				// The Context here SHOULD be something that's a lifecycle owner
-				if (Context.Context is AndroidX.Lifecycle.ILifecycleOwner lifecycleOwner)
-				{
-					camera = cameraProvider.BindToLifecycle(lifecycleOwner, cameraSelector, cameraPreview, imageAnalyzer);
-				}
-				else if (Microsoft.Maui.ApplicationModel.Platform.CurrentActivity is AndroidX.Lifecycle.ILifecycleOwner maLifecycleOwner)
-				{
-					// if not, this should be sufficient as a fallback
-					camera = cameraProvider.BindToLifecycle(maLifecycleOwner, cameraSelector, cameraPreview, imageAnalyzer);
-				}
-			}
-		}
+                UpdateCamera();
 
-		public void UpdateTorch(bool on)
-		{
-			camera?.CameraControl?.EnableTorch(on);
-		}
+            }), ContextCompat.GetMainExecutor(Context.Context)); //GetMainExecutor: returns an Executor that runs on the main thread.
+        }
 
-		public void Focus(Point point)
-		{
+        public void Disconnect()
+        {
+            _cameraProvider?.UnbindAll();
+            _cameraExecutor?.Shutdown();
+        }
 
-		}
+        public void UpdateCamera()
+        {
+            if (_cameraProvider != null)
+            {
+                // Unbind use cases before rebinding
+                _cameraProvider.UnbindAll();
 
-		public void AutoFocus()
-		{
+                CameraSelector? selectedCameraSelector = null;
 
-		}
+                // If a specific camera is selected, use it
+                if (SelectedCamera is not null)
+                {
+                    // Parse the DeviceId to get lens facing and index (format: "front-0", "rear-1", etc.)
+                    var parts = SelectedCamera.DeviceId?.Split('-');
+                    if (parts?.Length == 2 && int.TryParse(parts[1], out var targetIndex))
+                    {
+                        var targetFacing = parts[0] == "front" ? CameraSelector.LensFacingFront : CameraSelector.LensFacingBack;
+                        
+                        var availableCameraInfos = _cameraProvider.AvailableCameraInfos;
+                        var facingIndex = 0;
+                        
+                        foreach (var cameraInfo in availableCameraInfos)
+                        {
+                            if (cameraInfo.CameraSelector is not null && cameraInfo.LensFacing == targetFacing)
+                            {
+                                if (facingIndex == targetIndex)
+                                {
+                                    selectedCameraSelector = cameraInfo.CameraSelector;
+                                    break;
+                                }
+                                facingIndex++;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    var cameraLocation = CameraLocation;
 
-		public void Dispose()
-		{
-			cameraProvider?.Shutdown();
+                    // Select back camera as a default, or front camera otherwise
+                    if (cameraLocation == CameraLocation.Rear && _cameraProvider.HasCamera(CameraSelector.DefaultBackCamera))
+                        selectedCameraSelector = CameraSelector.DefaultBackCamera;
+                    else if (cameraLocation == CameraLocation.Front && _cameraProvider.HasCamera(CameraSelector.DefaultFrontCamera))
+                        selectedCameraSelector = CameraSelector.DefaultFrontCamera;
+                    else
+                        selectedCameraSelector = CameraSelector.DefaultBackCamera;
+                }
 
-			cameraExecutor?.Shutdown();
-			cameraExecutor?.Dispose();
-		}
-	}
+                if (selectedCameraSelector == null)
+                    throw new System.Exception("Camera not found");
+
+                _cameraSelector = selectedCameraSelector;
+
+                // The Context here SHOULD be something that's a lifecycle owner
+                if (Context.Context is AndroidX.Lifecycle.ILifecycleOwner lifecycleOwner)
+                {
+                    _camera = _cameraProvider.BindToLifecycle(lifecycleOwner, _cameraSelector, _cameraPreview, _imageAnalyzer);
+                }
+                else if (Microsoft.Maui.ApplicationModel.Platform.CurrentActivity is AndroidX.Lifecycle.ILifecycleOwner maLifecycleOwner)
+                {
+                    // if not, this should be sufficient as a fallback
+                    _camera = _cameraProvider.BindToLifecycle(maLifecycleOwner, _cameraSelector, _cameraPreview, _imageAnalyzer);
+                }
+            }
+        }
+
+        public Task<IReadOnlyList<CameraInfo>> GetAvailableCameras()
+        {
+            var cameras = new List<CameraInfo>();
+
+            if (_cameraProvider != null)
+            {
+                var availableCameraInfos = _cameraProvider.AvailableCameraInfos;
+                var frontIndex = 0;
+                var rearIndex = 0;
+                
+                foreach (var cameraInfo in availableCameraInfos)
+                {
+                    if (cameraInfo.CameraSelector is not null)
+                    {
+                        var lensFacing = cameraInfo.LensFacing;
+                        var location = lensFacing == CameraSelector.LensFacingFront 
+                            ? CameraLocation.Front 
+                            : CameraLocation.Rear;
+                        
+                        // Create a stable ID based on lens facing and index within that facing
+                        // Format: "front-0", "front-1", "rear-0", "rear-1", "rear-2", etc.
+                        string cameraId;
+                        string name;
+                        
+                        if (location == CameraLocation.Front)
+                        {
+                            cameraId = $"front-{frontIndex}";
+                            name = frontIndex == 0 ? "Front Camera" : $"Front Camera {frontIndex + 1}";
+                            frontIndex++;
+                        }
+                        else
+                        {
+                            cameraId = $"rear-{rearIndex}";
+                            name = rearIndex == 0 ? "Rear Camera" : $"Rear Camera {rearIndex + 1}";
+                            rearIndex++;
+                        }
+                        
+                        cameras.Add(new CameraInfo(cameraId, name, location));
+                    }
+                }
+            }
+
+            return Task.FromResult<IReadOnlyList<CameraInfo>>(cameras);
+        }
+
+        public void UpdateTorch(bool on)
+        {
+            _camera?.CameraControl?.EnableTorch(on);
+        }
+
+        public void Focus(Point point)
+        {
+
+        }
+
+        public void AutoFocus()
+        {
+
+        }
+
+        public void Dispose()
+        {
+            _imageAnalyzer?.Dispose();
+            _imageAnalyzer = null;
+
+            _cameraPreview?.Dispose();
+            _cameraPreview = null;
+
+            _resolutionSelector?.Dispose();
+            _resolutionSelector = null;
+
+            _cameraSelector?.Dispose();
+            _cameraSelector = null;
+
+            _cameraProvider?.Dispose();
+            _cameraProvider = null;
+
+            _previewView?.Dispose();
+            _previewView = null;
+
+            _cameraExecutor?.Dispose();
+            _cameraExecutor = null;
+
+            _camera?.Dispose();
+            _camera = null;
+        }
+    }
 }

@@ -1,9 +1,12 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using System;
+using System.Runtime.Versioning;
+
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Handlers;
-using System;
-using System.Linq;
+
+#nullable enable
 
 namespace ZXing.Net.Maui
 {
@@ -13,8 +16,10 @@ namespace ZXing.Net.Maui
         {
             [nameof(ICameraBarcodeReaderView.Options)] = MapOptions,
             [nameof(ICameraBarcodeReaderView.IsDetecting)] = MapIsDetecting,
-            [nameof(ICameraBarcodeReaderView.IsTorchOn)] = (handler, virtualView) => handler.cameraManager.UpdateTorch(virtualView.IsTorchOn),
-            [nameof(ICameraBarcodeReaderView.CameraLocation)] = (handler, virtualView) => handler.cameraManager.UpdateCameraLocation(virtualView.CameraLocation)
+            [nameof(ICameraBarcodeReaderView.IsTorchOn)] = (handler, virtualView) => handler.cameraManager?.UpdateTorch(virtualView.IsTorchOn),
+            [nameof(ICameraBarcodeReaderView.CameraLocation)] = (handler, virtualView) => handler.cameraManager?.UpdateCameraLocation(virtualView.CameraLocation),
+            [nameof(ICameraBarcodeReaderView.SelectedCamera)] = (handler, virtualView) => handler.cameraManager?.UpdateSelectedCamera(virtualView.SelectedCamera),
+            [nameof(IView.Visibility)] = MapVisibility
         };
 
         public static CommandMapper<ICameraBarcodeReaderView, CameraBarcodeReaderViewHandler> CameraBarcodeReaderCommandMapper = new()
@@ -27,17 +32,21 @@ namespace ZXing.Net.Maui
         {
         }
 
-        public CameraBarcodeReaderViewHandler(PropertyMapper propertyMapper = null, CommandMapper commandMapper = null)
+        public CameraBarcodeReaderViewHandler(PropertyMapper? propertyMapper = null, CommandMapper? commandMapper = null)
             : base(propertyMapper ?? CameraBarcodeReaderViewMapper, commandMapper ?? CameraBarcodeReaderCommandMapper)
         {
         }
 
-        CameraManager cameraManager;
+        CameraManager? cameraManager;
 
-        Readers.IBarcodeReader barcodeReader;
+        volatile ICameraBarcodeReaderView? _virtualView;
+        volatile bool _isDetecting;
+        volatile bool _isConnected;
 
-        protected Readers.IBarcodeReader BarcodeReader
-            => barcodeReader ??= Services.GetService<Readers.IBarcodeReader>();
+        Readers.IBarcodeReader? barcodeReader;
+
+        protected Readers.IBarcodeReader? BarcodeReader
+            => barcodeReader ??= Services?.GetService<Readers.IBarcodeReader>();
 
         protected override NativePlatformCameraPreviewView CreatePlatformView()
         {
@@ -51,10 +60,15 @@ namespace ZXing.Net.Maui
         {
             base.ConnectHandler(nativeView);
 
+            _virtualView = VirtualView;
+
             if (cameraManager != null)
             {
-                if (await cameraManager.CheckPermissions())
+                if (await CameraManager.CheckPermissions())
+                {
                     cameraManager.Connect();
+                    _isConnected = true;
+                }
 
                 cameraManager.FrameReady += CameraManager_FrameReady;
             }
@@ -68,35 +82,90 @@ namespace ZXing.Net.Maui
 
                 cameraManager.Disconnect();
                 cameraManager.Dispose();
+                cameraManager = null;
             }
+
+            _isConnected = false;
+            _virtualView = null;
 
             base.DisconnectHandler(nativeView);
         }
 
-        private void CameraManager_FrameReady(object sender, CameraFrameBufferEventArgs e)
+        private void CameraManager_FrameReady(object? sender, CameraFrameBufferEventArgs e)
         {
-            VirtualView?.FrameReady(e);
+            // The FrameReady event does not execute on the main thread,
+            // requiring protection against threading issues.
 
-            if (VirtualView?.IsDetecting ?? false)
+            _virtualView?.FrameReady(e);
+
+            if (_isDetecting)
             {
-                var barcodes = BarcodeReader.Decode(e.Data);
+                var barcodes = BarcodeReader?.Decode(e.Data);
 
-                if (barcodes?.Any() ?? false)
-                    VirtualView?.BarcodesDetected(new BarcodeDetectionEventArgs(barcodes));
+                if (barcodes != null && barcodes.Length > 0)
+                {
+                    _virtualView?.BarcodesDetected(new BarcodeDetectionEventArgs(barcodes));
+                }
             }
         }
 
         public static void MapOptions(CameraBarcodeReaderViewHandler handler, ICameraBarcodeReaderView cameraBarcodeReaderView)
-            => handler.BarcodeReader.Options = cameraBarcodeReaderView.Options;
+        {
+            if (handler.BarcodeReader != null)
+            {
+                handler.BarcodeReader.Options = cameraBarcodeReaderView.Options;
+            }
+        }
 
         public static void MapIsDetecting(CameraBarcodeReaderViewHandler handler, ICameraBarcodeReaderView cameraBarcodeReaderView)
-        { }
+        {
+            handler._isDetecting = cameraBarcodeReaderView.IsDetecting;
+        }
+
+        public static async void MapVisibility(CameraBarcodeReaderViewHandler handler, ICameraBarcodeReaderView cameraBarcodeReaderView)
+        {
+            // Note: async void is required here because PropertyMapper requires void return type
+            // Exception handling is added to prevent unhandled exceptions
+            try
+            {
+                // When visibility changes, we need to update the camera state
+                if (cameraBarcodeReaderView is IView view)
+                {
+                    if (view.Visibility == Visibility.Visible && handler._isConnected)
+                    {
+                        // View became visible and camera is connected - rebind camera
+                        // This ensures the camera preview works even if the view started invisible
+                        if (handler.cameraManager != null)
+                        {
+                            if (await CameraManager.CheckPermissions())
+                            {
+                                handler.cameraManager.UpdateCamera();
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the exception - this prevents crashes from unhandled async void exceptions
+                System.Diagnostics.Debug.WriteLine($"Error in MapVisibility while updating camera state: {ex.Message}");
+            }
+        }
 
         public void Focus(Point point)
             => cameraManager?.Focus(point);
 
         public void AutoFocus()
             => cameraManager?.AutoFocus();
+
+        public async System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<CameraInfo>> GetAvailableCamerasAsync()
+        {
+            if (cameraManager != null)
+            {
+                return await cameraManager.GetAvailableCameras();
+            }
+            return new System.Collections.Generic.List<CameraInfo>();
+        }
 
         public static void MapFocus(CameraBarcodeReaderViewHandler handler, ICameraBarcodeReaderView cameraBarcodeReaderView, object? parameter)
         {

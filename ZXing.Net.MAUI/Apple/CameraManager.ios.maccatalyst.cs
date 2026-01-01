@@ -1,20 +1,42 @@
 ﻿#if IOS || MACCATALYST
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using AVFoundation;
+using CoreAnimation;
 using CoreFoundation;
 using CoreVideo;
 using Foundation;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using UIKit;
-using Microsoft.Maui;
 using MSize = Microsoft.Maui.Graphics.Size;
-using CoreAnimation;
 
 namespace ZXing.Net.Maui
 {
 	internal partial class CameraManager
 	{
+		/// <summary>
+		/// Gets a value indicating whether barcode scanning is supported on this device.
+		/// </summary>
+		public static partial bool IsSupported
+		{
+			get
+			{
+				try
+				{
+					var discoverySession = AVCaptureDeviceDiscoverySession.Create(
+						CaptureDevices(),
+						AVMediaTypes.Video,
+						AVCaptureDevicePosition.Unspecified);
+					return (discoverySession?.Devices?.Length ?? 0) > 0;
+				}
+				catch
+				{
+					return false;
+				}
+			}
+		}
+
 		AVCaptureSession captureSession;
 		AVCaptureDevice captureDevice;
 		AVCaptureInput captureInput = null;
@@ -65,14 +87,14 @@ namespace ZXing.Net.Maui
 				if (captureDelegate == null)
 				{
 					captureDelegate = new CaptureDelegate
-					{
-						SampleProcessor = cvPixelBuffer =>
+					(
+						cvPixelBuffer =>
 							FrameReady?.Invoke(this, new CameraFrameBufferEventArgs(new Readers.PixelBufferHolder
-								{
-									Data = cvPixelBuffer,
-									Size = new MSize(cvPixelBuffer.Width, cvPixelBuffer.Height)
-								}))
-					};
+							{
+								Data = cvPixelBuffer,
+								Size = new MSize(cvPixelBuffer.Width, cvPixelBuffer.Height)
+							}))
+					);
 				}
 
 				if (dispatchQueue == null)
@@ -107,24 +129,67 @@ namespace ZXing.Net.Maui
 					captureDevice = null;
 				}
 
-				var devices = AVCaptureDevice.DevicesWithMediaType(AVMediaTypes.Video.GetConstant());
-				foreach (var device in devices)
+				// If a specific camera is selected, use it
+				if (SelectedCamera != null)
 				{
-					if (CameraLocation == CameraLocation.Front &&
-						device.Position == AVCaptureDevicePosition.Front)
+					captureDevice = AVCaptureDevice.GetDefaultDevice(AVMediaTypes.Video);
+					var discoverySession = AVCaptureDeviceDiscoverySession.Create(CaptureDevices(), AVMediaTypes.Video, AVCaptureDevicePosition.Unspecified);
+					foreach (var device in discoverySession.Devices)
 					{
-						captureDevice = device;
-						break;
-					}
-					else if (CameraLocation == CameraLocation.Rear && device.Position == AVCaptureDevicePosition.Back)
-					{
-						captureDevice = device;
-						break;
+						if (device.UniqueID == SelectedCamera.DeviceId)
+						{
+							captureDevice = device;
+							break;
+						}
 					}
 				}
+				else
+				{
+					var discoverySession = AVCaptureDeviceDiscoverySession.Create(CaptureDevices(), AVMediaTypes.Video, AVCaptureDevicePosition.Unspecified);
+					
+					// Prioritize cameras suitable for barcode scanning
+					AVCaptureDevice selectedDevice = null;
+					AVCaptureDevice fallbackDevice = null;
+					
+					foreach (var device in discoverySession.Devices)
+					{
+						// Skip depth-only cameras (TrueDepth, LiDAR) as they're not suitable for barcode scanning
+						if (device.DeviceType == AVCaptureDeviceType.BuiltInTrueDepthCamera ||
+							device.DeviceType == AVCaptureDeviceType.BuiltInLiDarDepthCamera)
+							continue;
+						
+						var isCorrectPosition = (CameraLocation == CameraLocation.Front && device.Position == AVCaptureDevicePosition.Front) ||
+												(CameraLocation == CameraLocation.Rear && device.Position == AVCaptureDevicePosition.Back);
+						
+						if (isCorrectPosition)
+						{
+							// Prefer multi-camera systems (Dual, Triple, DualWide) - these are the main cameras on modern iPhones
+							if (device.DeviceType == AVCaptureDeviceType.BuiltInDualCamera ||
+								device.DeviceType == AVCaptureDeviceType.BuiltInTripleCamera ||
+								device.DeviceType == AVCaptureDeviceType.BuiltInDualWideCamera)
+							{
+								selectedDevice = device;
+								break; // Multi-camera systems are ideal for barcode scanning
+							}
+							// Wide-angle is a good standard camera
+							else if (device.DeviceType == AVCaptureDeviceType.BuiltInWideAngleCamera && selectedDevice == null)
+							{
+								selectedDevice = device;
+							}
+							// Avoid ultra-wide and telephoto, but keep as last resort fallback
+							else if (fallbackDevice == null)
+							{
+								fallbackDevice = device;
+							}
+						}
+					}
+					
+					// Use selected device, or fallback if nothing better was found
+					captureDevice = selectedDevice ?? fallbackDevice;
 
-				if (captureDevice == null)
-					captureDevice = AVCaptureDevice.GetDefaultDevice(AVMediaTypes.Video);
+					if (captureDevice == null)
+						captureDevice = AVCaptureDevice.GetDefaultDevice(AVMediaTypes.Video);
+				}
 
 				if (captureDevice is null)
 					return;
@@ -137,6 +202,25 @@ namespace ZXing.Net.Maui
 			}
 		}
 
+		public Task<IReadOnlyList<CameraInfo>> GetAvailableCameras()
+		{
+			var cameras = new List<CameraInfo>();
+
+			var discoverySession = AVCaptureDeviceDiscoverySession.Create(CaptureDevices(), AVMediaTypes.Video, AVCaptureDevicePosition.Unspecified);
+			foreach (var device in discoverySession.Devices)
+			{
+				var location = device.Position == AVCaptureDevicePosition.Front 
+					? CameraLocation.Front 
+					: CameraLocation.Rear;
+				
+				var name = device.LocalizedName ?? $"Camera ({(location == CameraLocation.Front ? "Front" : "Rear")})";
+				
+				cameras.Add(new CameraInfo(device.UniqueID, name, location));
+			}
+
+			return Task.FromResult<IReadOnlyList<CameraInfo>>(cameras);
+		}
+
 
 		public void Disconnect()
 		{
@@ -146,7 +230,7 @@ namespace ZXing.Net.Maui
 					captureSession.StopRunning();
 
 				captureSession.RemoveOutput(videoDataOutput);
-				
+
 				// Cleanup old input
 				if (captureInput != null && captureSession.Inputs.Length > 0 && captureSession.Inputs.Contains(captureInput))
 				{
@@ -176,7 +260,7 @@ namespace ZXing.Net.Maui
 					{
 						CaptureDevicePerformWithLockedConfiguration(() =>
 							captureDevice.TorchMode = on ? AVCaptureTorchMode.On : AVCaptureTorchMode.Off);
-                    }
+					}
 				}
 				catch (Exception ex)
 				{
@@ -241,6 +325,38 @@ namespace ZXing.Net.Maui
 		public void Dispose()
 		{
 		}
+
+		static AVCaptureDeviceType[] CaptureDevices()
+		{
+			AVCaptureDeviceType[] deviceTypes =
+			[
+				AVCaptureDeviceType.BuiltInWideAngleCamera,
+				AVCaptureDeviceType.BuiltInTelephotoCamera,
+				AVCaptureDeviceType.BuiltInDualCamera
+			];
+
+			if (UIDevice.CurrentDevice.CheckSystemVersion(11, 1))
+			{
+				deviceTypes = [.. deviceTypes,
+				AVCaptureDeviceType.BuiltInTrueDepthCamera];
+			}
+
+			if (UIDevice.CurrentDevice.CheckSystemVersion(13, 0))
+			{
+				deviceTypes = [.. deviceTypes,
+				AVCaptureDeviceType.BuiltInUltraWideCamera,
+				AVCaptureDeviceType.BuiltInTripleCamera,
+				AVCaptureDeviceType.BuiltInDualWideCamera];
+			}
+
+			if (UIDevice.CurrentDevice.CheckSystemVersion(15, 4))
+			{
+				deviceTypes = [.. deviceTypes,
+				AVCaptureDeviceType.BuiltInLiDarDepthCamera];
+			}
+
+			return deviceTypes;
+		}
 	}
 
 	class PreviewView : UIView
@@ -278,6 +394,6 @@ namespace ZXing.Net.Maui
 			PreviewLayer.Transform = transform;
 			PreviewLayer.Frame = Layer.Bounds;
 		}
-    }
+	}
 }
 #endif

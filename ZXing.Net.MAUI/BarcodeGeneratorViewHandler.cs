@@ -1,16 +1,18 @@
-using System;
-using System.Linq;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Handlers;
+using System.Linq;
+using System;
+using ZXing;
+
+#nullable enable
 
 namespace ZXing.Net.Maui
 {
 	public partial class BarcodeGeneratorViewHandler : ViewHandler<IBarcodeGeneratorView, NativePlatformImageView>
 	{
 		Size desiredSize;
-		BarcodeWriter writer;
+		readonly BarcodeWriter writer;
 
 		public static PropertyMapper<IBarcodeGeneratorView, BarcodeGeneratorViewHandler> BarcodeGeneratorViewMapper = new()
 		{
@@ -19,6 +21,7 @@ namespace ZXing.Net.Maui
 			[nameof(IBarcodeGeneratorView.ForegroundColor)] = MapUpdateBarcode,
 			[nameof(IBarcodeGeneratorView.BackgroundColor)] = MapUpdateBarcode,
 			[nameof(IBarcodeGeneratorView.Margin)] = MapUpdateBarcode,
+			[nameof(IBarcodeGeneratorView.CharacterSet)] = MapUpdateBarcode,
 		};
 
 		public BarcodeGeneratorViewHandler() : base(BarcodeGeneratorViewMapper)
@@ -26,7 +29,7 @@ namespace ZXing.Net.Maui
 			writer = new BarcodeWriter();
 		}
 
-		public BarcodeGeneratorViewHandler(PropertyMapper mapper = null) : base(mapper ?? BarcodeGeneratorViewMapper)
+		public BarcodeGeneratorViewHandler(PropertyMapper? mapper = null) : base(mapper ?? BarcodeGeneratorViewMapper)
 		{
 			writer = new BarcodeWriter();
 		}
@@ -44,19 +47,19 @@ namespace ZXing.Net.Maui
 			UpdateBarcode();
 		}
 
-		NativePlatformImageView imageView;
-
 		protected override NativePlatformImageView CreatePlatformView()
 		{
 #if IOS || MACCATALYST
-			imageView ??= new UIKit.UIImageView { BackgroundColor = UIKit.UIColor.Clear };
+			return new UIKit.UIImageView { BackgroundColor = UIKit.UIColor.Clear };
 #elif ANDROID
-			imageView = new NativePlatformImageView(Context);
+			NativePlatformImageView imageView = new(Context);
 			imageView.SetBackgroundColor(Android.Graphics.Color.Transparent);
-#elif WINDOWS
-			imageView = new NativePlatformImageView();
-#endif
 			return imageView;
+#elif WINDOWS
+            return new NativePlatformImageView();
+#else
+			throw new NotImplementedException();
+#endif
 		}
 
 		protected override void ConnectHandler(NativePlatformImageView nativeView)
@@ -75,16 +78,22 @@ namespace ZXing.Net.Maui
 			writer.ForegroundColor = VirtualView.ForegroundColor;
 			writer.BackgroundColor = VirtualView.BackgroundColor;
 
-			NativePlatformImage image = null;
+			// Set character encoding hint
+			if (!string.IsNullOrEmpty(VirtualView.CharacterSet))
+			{
+				writer.Options.Hints[EncodeHintType.CHARACTER_SET] = VirtualView.CharacterSet;
+			}
+
+			NativePlatformImage? image = null;
 			if (!string.IsNullOrEmpty(VirtualView.Value))
-				image = writer?.Write(VirtualView.Value);
+				image = writer.Write(VirtualView.Value);
 
 #if IOS || MACCATALYST
-			imageView.Image = image;
+			PlatformView.Image = image;
 #elif ANDROID
-			imageView?.SetImageBitmap(image);
+			PlatformView.SetImageBitmap(image);
 #elif WINDOWS
-			imageView.Source = image;
+            PlatformView.Source = image;
 #endif
 		}
 
